@@ -3,8 +3,8 @@
 #SBATCH --output=logs/pi3_colmap_%A_%a.out
 #SBATCH --error=logs/pi3_colmap_%A_%a.err
 #SBATCH --time=04:00:00
-#SBATCH --gres=gpu:a100-40
-#SBATCH --mem=40G
+#SBATCH --gres=gpu:a100-80
+#SBATCH --mem=80G
 #SBATCH --cpus-per-task=4
 #SBATCH --array=0-10
 
@@ -28,8 +28,8 @@ python pi3_to_colmap.py \
     --images  "${IMG_DIR}" \
     --output  "${OUT_DIR}" \
     --ckpt    "${CKPT}" \
-    --chunk   32 \
-    --overlap 8 \
+    --chunk   24 \
+    --overlap 6 \
     --conf_thr 0.1 \
     --max_pts 200000 \
     --interval 1

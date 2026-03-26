@@ -177,10 +177,12 @@ def main():
                         help='Frame sampling interval (default: 1 = use all)')
     parser.add_argument('--max_pts',  type=int, default=200_000,
                         help='Max points to write to points3D.txt (default: 200000)')
-    parser.add_argument('--chunk',    type=int, default=32,
-                        help='VO chunk size (default: 32; use 64 on A100-80)')
-    parser.add_argument('--overlap',  type=int, default=8,
-                        help='VO overlap (default: 8; use 12 on A100-80)')
+    parser.add_argument('--chunk',    type=int, default=16,
+                        help='VO chunk size (default: 16)')
+    parser.add_argument('--overlap',  type=int, default=4,
+                        help='VO overlap (default: 4)')
+    parser.add_argument('--probe_n',  type=int, default=8,
+                        help='Frames used to estimate intrinsics (default: 8)')
     parser.add_argument('--conf_thr', type=float, default=0.1,
                         help='Confidence threshold for point filtering (default: 0.1)')
     parser.add_argument('--device',   default='cuda')
@@ -217,7 +219,7 @@ def main():
 
     # ── 3. Estimate intrinsics on first chunk ─────────────────────────────────
     print(f"\n[3/5] Estimating intrinsics from first chunk...")
-    probe_n = min(args.chunk, N)
+    probe_n = min(args.probe_n, N)
     probe_imgs = imgs_batch[:, :probe_n]
 
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=dtype):
