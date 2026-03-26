@@ -382,6 +382,22 @@ class Pi3X(nn.Module, PyTorchModelHubMixin):
         
         return hidden, None, None, None, None
     
+    def _chunked_conv_head(self, head, feat, patch_h, patch_w, chunk_size=64):
+        BN = feat.shape[0]
+        if BN <= chunk_size:
+            return head(feat, patch_h=patch_h, patch_w=patch_w)
+        outputs = [[] for _ in range(len(head.output_block))] if isinstance(head.output_block, nn.ModuleList) else []
+        for i in range(0, BN, chunk_size):
+            chunk_out = head(feat[i:i+chunk_size], patch_h=patch_h, patch_w=patch_w)
+            if isinstance(chunk_out, list):
+                for j, o in enumerate(chunk_out):
+                    outputs[j].append(o)
+            else:
+                outputs.append(chunk_out)
+        if isinstance(outputs[0], list):
+            return [torch.cat(parts, dim=0) for parts in outputs]
+        return torch.cat(outputs, dim=0)
+
     def forward_head(self, hidden, pos, B, N, H, W, patch_h, patch_w):
         device = hidden.device
         hw = patch_h*patch_w+self.patch_start_idx
@@ -400,7 +416,9 @@ class Pi3X(nn.Module, PyTorchModelHubMixin):
         ret_conf = self.conf_decoder(hidden, xpos=pos)
 
         with torch.amp.autocast(device_type='cuda', enabled=False):
-            xy, z = self.point_head(ret_point[:, self.patch_start_idx:].float(), patch_h=patch_h, patch_w=patch_w)
+            point_feat = ret_point[:, self.patch_start_idx:].float()
+            xy, z = self._chunked_conv_head(self.point_head, point_feat, patch_h, patch_w)
+            del point_feat
             xy = xy.permute(0, 2, 3, 1).reshape(B, N, H, W, -1)
             z = z.permute(0, 2, 3, 1).reshape(B, N, H, W, -1)
 
@@ -413,7 +431,9 @@ class Pi3X(nn.Module, PyTorchModelHubMixin):
             metric = self.metric_head(ret_metric.float()).reshape(B).exp()
 
             # conf
-            conf = self.conf_head(ret_conf[:, self.patch_start_idx:].float(), patch_h=patch_h, patch_w=patch_w)[0]
+            conf_feat = ret_conf[:, self.patch_start_idx:].float()
+            conf = self._chunked_conv_head(self.conf_head, conf_feat, patch_h, patch_w)[0]
+            del conf_feat
             conf = conf.permute(0, 2, 3, 1).reshape(B, N, H, W, -1)
 
             # points
