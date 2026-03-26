@@ -9,15 +9,31 @@ class Pi3XVO:
         self.model.eval()
 
     @torch.no_grad()
-    def __call__(self, imgs, chunk_size=16, overlap=6, conf_thre=0.05, inject_condition=None, dtype=torch.bfloat16):
+    def __call__(self, imgs, chunk_size=16, overlap=6, conf_thre=0.05, inject_condition=None, dtype=torch.bfloat16, intrinsics=None):
         """
         inject_condition: list of strings, e.g. ['pose', 'depth']
         """
         if inject_condition is None:
             inject_condition = []
-            
+
         B, T, C, H, W = imgs.shape
         print(f"[PiXVO] Total frames: {T}, Chunk size: {chunk_size}, Overlap: {overlap}")
+
+        # Build a canonical ray grid from estimated intrinsics (paper recommendation:
+        # inject intrinsics as ray conditioning for ALL frames in every chunk to
+        # prevent focal/scale drift across windows).
+        canonical_rays = None
+        if intrinsics is not None:
+            fx, fy, cx, cy = intrinsics
+            ys = torch.arange(H, device=imgs.device).float()
+            xs = torch.arange(W, device=imgs.device).float()
+            grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
+            ray_dirs = torch.stack(
+                [(grid_x - cx) / fx, (grid_y - cy) / fy, torch.ones_like(grid_x)],
+                dim=-1,
+            )  # (H, W, 3)
+            canonical_rays = F.normalize(ray_dirs, dim=-1)  # (H, W, 3)
+            print(f"[PiXVO] Ray conditioning enabled: fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
 
         merged_points, merged_poses, merged_confs = [], [], []
         
@@ -36,7 +52,15 @@ class Pi3XVO:
                 break
 
             model_kwargs = {'with_prior': False}
-            
+
+            # Inject estimated intrinsics as ray conditioning for all frames (paper recommendation).
+            # This gives the model a consistent coordinate frame across every window.
+            if canonical_rays is not None:
+                prior_rays = canonical_rays.unsqueeze(0).unsqueeze(0).expand(B, current_len, H, W, 3)
+                model_kwargs['rays'] = prior_rays.contiguous()
+                model_kwargs['mask_add_ray'] = torch.ones((B, current_len), dtype=torch.bool, device=imgs.device)
+                model_kwargs['with_prior'] = True
+
             if start_idx > 0:
                 if 'pose' in inject_condition and prev_aligned_poses_overlap is not None:
                     prior_poses = torch.eye(4, device=imgs.device).repeat(B, current_len, 1, 1)
@@ -64,7 +88,7 @@ class Pi3XVO:
                     model_kwargs['mask_add_depth'] = mask_depth
                     model_kwargs['with_prior'] = True
 
-                if ('ray' in inject_condition or 'intrinsic' in inject_condition) and prev_local_depth_overlap is not None:
+                if ('ray' in inject_condition or 'intrinsic' in inject_condition) and prev_local_depth_overlap is not None and canonical_rays is None:
                     prior_rays = torch.zeros((B, current_len, H, W, 3), device=imgs.device)
                     prior_rays[:, :overlap] = prev_rays_overlap
                     
