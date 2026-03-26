@@ -25,7 +25,7 @@ from torchvision import transforms
 
 from pi3.models.pi3x import Pi3X
 from pi3.pipe.pi3x_vo import Pi3XVO
-from pi3.utils.geometry import depth_edge
+from pi3.utils.geometry import depth_edge, recover_intrinsic_from_rays_d
 from pi3.utils.basic import write_ply
 
 
@@ -61,26 +61,6 @@ def load_images(image_dir, interval=1, pixel_limit=255000):
 # Focal length estimation from local_points
 # ─────────────────────────────────────────────────────────────────────────────
 
-def estimate_focal(local_points, conf, H, W):
-    device = local_points.device
-    ys = torch.arange(H, device=device).float()
-    xs = torch.arange(W, device=device).float()
-    gy, gx = torch.meshgrid(ys, xs, indexing='ij')
-    dx, dy = gx - W / 2.0, gy - H / 2.0
-
-    xc, yc, zc = local_points[..., 0], local_points[..., 1], local_points[..., 2]
-    vx = (zc > 0) & (dx.abs() > W * 0.05) & (conf > 0.15)
-    vy = (zc > 0) & (dy.abs() > H * 0.05) & (conf > 0.15)
-
-    with torch.no_grad():
-        rx = xc / zc.clamp(min=1e-6)
-        ry = yc / zc.clamp(min=1e-6)
-        fxv = (dx.unsqueeze(0).abs() / rx.abs().clamp(min=1e-6))[vx]
-        fyv = (dy.unsqueeze(0).abs() / ry.abs().clamp(min=1e-6))[vy]
-
-    fx = fxv.abs().median().item() if fxv.numel() > 0 else float(max(H, W))
-    fy = fyv.abs().median().item() if fyv.numel() > 0 else float(max(H, W))
-    return fx, fy
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -411,10 +391,10 @@ def main():
 
     # ── 2. Load model ─────────────────────────────────────────────────────────
     print(f"\n[2/5] Loading Pi3X from {args.ckpt}")
-    model = Pi3X(use_multimodal=False).eval()
+    # Keep multimodal enabled — ray_embed is needed for intrinsic conditioning.
+    model = Pi3X().eval()
     from safetensors.torch import load_file
     model.load_state_dict(load_file(args.ckpt), strict=False)
-    model.disable_multimodal()
     model = model.to(device)
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
@@ -423,14 +403,16 @@ def main():
     probe_n = min(args.probe_n, N)
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=dtype):
         probe = model(imgs_batch[:, :probe_n], with_prior=False)
-    lp   = probe['local_points'][0].float()
-    conf = torch.sigmoid(probe['conf'][0, ..., 0]).float()
-    fx_m, fy_m = estimate_focal(lp, conf, Hm, Wm)
-    cx_m, cy_m = Wm / 2.0, Hm / 2.0
+    rays = probe['rays'][0].float()   # (probe_n, H, W, 3)
+    K = recover_intrinsic_from_rays_d(rays, force_center_principal_point=True)  # (probe_n, 3, 3)
+    fx_m = K[:, 0, 0].mean().item()
+    fy_m = K[:, 1, 1].mean().item()
+    cx_m = K[:, 0, 2].mean().item()
+    cy_m = K[:, 1, 2].mean().item()
     sx, sy = W0 / Wm, H0 / Hm
     fx, fy, cx, cy = fx_m*sx, fy_m*sy, cx_m*sx, cy_m*sy
     print(f"  fx={fx:.1f}  fy={fy:.1f}  cx={cx:.1f}  cy={cy:.1f}  (at {W0}x{H0})")
-    del probe, lp, conf
+    del probe, rays
     torch.cuda.empty_cache()
 
     # ── 4. Run Pi3XVO ─────────────────────────────────────────────────────────

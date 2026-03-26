@@ -19,15 +19,6 @@ set -e
 cd "${HOME}/Pi3"
 mkdir -p logs "${OUT_DIR}"
 
-eval "$(conda shell.bash hook)"
-conda activate pi3
-
-unset LD_LIBRARY_PATH
-PYVER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-export LD_LIBRARY_PATH=$(find ${CONDA_PREFIX}/lib/python${PYVER}/site-packages/nvidia \
-    ~/.local/lib/python${PYVER}/site-packages/nvidia \
-    -name "*.so*" -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ':')${CONDA_PREFIX}/lib
-
 echo "Node: $(hostname) | GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "Scene: ${SCENE}"
 echo "Images: ${IMG_DIR}"

@@ -99,12 +99,8 @@ class FlashAttention(Attention):
         # q, k, v = unbind(qkv, 2)
         q, k, v = [qkv[:,:,i] for i in range(3)]
 
-        if q.dtype == torch.bfloat16:
-            with nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                x = scaled_dot_product_attention(q, k, v)
-        else:
-            with nn.attention.sdpa_kernel([SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
-                x = scaled_dot_product_attention(q, k, v)
+        with nn.attention.sdpa_kernel([SDPBackend.MATH]):
+            x = scaled_dot_product_attention(q, k, v)
 
         x = x.transpose(1, 2).reshape([B, N, C])
 
@@ -334,12 +330,8 @@ class FlashAttentionRope(AttentionRope):
             q = self.rope(q, xpos)
             k = self.rope(k, xpos)
 
-        if q.dtype == torch.bfloat16:
-            with nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                x = scaled_dot_product_attention(q, k, v)
-        else:
-            with nn.attention.sdpa_kernel([SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
-                x = scaled_dot_product_attention(q, k, v)
+        with nn.attention.sdpa_kernel([SDPBackend.MATH]):
+            x = scaled_dot_product_attention(q, k, v)
 
         x = x.transpose(1, 2).reshape([B, N, C])
 

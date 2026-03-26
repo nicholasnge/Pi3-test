@@ -18,6 +18,8 @@ if __name__ == '__main__':
                         help="Path to the model checkpoint file. Default: None")
     parser.add_argument("--device", type=str, default='cuda',
                         help="Device to run inference on ('cuda' or 'cpu'). Default: 'cuda'")
+    parser.add_argument("--pixel_limit", type=int, default=80000,
+                        help="Max pixels per frame (lower = smaller resolution, more frames fit in VRAM). Default: 80000")
                         
     args = parser.parse_args()
     if args.interval < 0:
@@ -42,7 +44,7 @@ if __name__ == '__main__':
 
     # 2. Prepare input data
     # The load_images_as_tensor function will print the loading path
-    imgs = load_images_as_tensor(args.data_path, interval=args.interval).to(device) # (N, 3, H, W)
+    imgs = load_images_as_tensor(args.data_path, interval=args.interval, PIXEL_LIMIT=args.pixel_limit).to(device) # (N, 3, H, W)
 
     # 3. Infer
     print("Running model inference...")

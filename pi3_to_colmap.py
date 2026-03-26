@@ -29,6 +29,7 @@ from torchvision import transforms
 
 from pi3.models.pi3x import Pi3X
 from pi3.pipe.pi3x_vo import Pi3XVO
+from pi3.utils.geometry import recover_intrinsic_from_rays_d
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,46 +71,6 @@ def load_images(image_dir, interval=1, pixel_limit=255000):
         tensors.append(to_tensor(img))
 
     return torch.stack(tensors), selected, (H_orig, W_orig), (TARGET_H, TARGET_W)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Focal-length estimation from Pi3's local_points
-# ─────────────────────────────────────────────────────────────────────────────
-
-def estimate_focal(local_points, conf, H, W):
-    """
-    local_points : (N, H, W, 3)  camera-frame xyz in metres
-    conf         : (N, H, W)     confidence in [0, 1]
-    Assumes pinhole model with cx=W/2, cy=H/2.
-    Returns (fx, fy) in pixels at Pi3's model resolution.
-    """
-    device = local_points.device
-    ys = torch.arange(H, device=device).float()
-    xs = torch.arange(W, device=device).float()
-    grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')   # (H, W)
-
-    dx = grid_x - W / 2.0   # pixel offset from principal point
-    dy = grid_y - H / 2.0
-
-    x_cam = local_points[..., 0]   # (N, H, W)
-    y_cam = local_points[..., 1]
-    z_cam = local_points[..., 2]
-
-    # valid: good depth, good confidence, far enough from principal point
-    valid_x = (z_cam > 0) & (dx.abs() > W * 0.05) & (conf > 0.15)
-    valid_y = (z_cam > 0) & (dy.abs() > H * 0.05) & (conf > 0.15)
-
-    # fx = pixel_offset / (x_cam / z_cam)
-    with torch.no_grad():
-        ray_x = x_cam / z_cam.clamp(min=1e-6)
-        ray_y = y_cam / z_cam.clamp(min=1e-6)
-
-        fx_vals = (dx.unsqueeze(0).abs() / ray_x.abs().clamp(min=1e-6))[valid_x]
-        fy_vals = (dy.unsqueeze(0).abs() / ray_y.abs().clamp(min=1e-6))[valid_y]
-
-    fx = fx_vals.abs().median().item() if fx_vals.numel() > 0 else float(max(H, W))
-    fy = fy_vals.abs().median().item() if fy_vals.numel() > 0 else float(max(H, W))
-    return fx, fy
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -239,8 +200,9 @@ def main():
 
     # ── 2. Load model ─────────────────────────────────────────────────────────
     print(f"\n[2/5] Loading Pi3X model...")
+    # Keep multimodal enabled — ray_embed is needed for intrinsic conditioning.
     if args.ckpt is not None:
-        model = Pi3X(use_multimodal=False).eval()
+        model = Pi3X().eval()
         if args.ckpt.endswith('.safetensors'):
             from safetensors.torch import load_file
             model.load_state_dict(load_file(args.ckpt), strict=False)
@@ -249,7 +211,6 @@ def main():
                 torch.load(args.ckpt, map_location=device, weights_only=False), strict=False)
     else:
         model = Pi3X.from_pretrained('yyfz233/Pi3X').eval()
-        model.disable_multimodal()
     model = model.to(device)
 
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -262,11 +223,13 @@ def main():
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=dtype):
         probe_out = model(probe_imgs, with_prior=False)
 
-    local_pts = probe_out['local_points'][0].float()   # (probe_n, H, W, 3)
-    conf_probe = torch.sigmoid(probe_out['conf'][0, ..., 0]).float()
-
-    fx_model, fy_model = estimate_focal(local_pts, conf_probe, H_model, W_model)
-    cx_model, cy_model = W_model / 2.0, H_model / 2.0
+    # Use the official least-squares intrinsic recovery from predicted ray directions.
+    rays = probe_out['rays'][0].float()   # (probe_n, H, W, 3)
+    K = recover_intrinsic_from_rays_d(rays, force_center_principal_point=True)  # (probe_n, 3, 3)
+    fx_model = K[:, 0, 0].mean().item()
+    fy_model = K[:, 1, 1].mean().item()
+    cx_model = K[:, 0, 2].mean().item()
+    cy_model = K[:, 1, 2].mean().item()
     print(f"      fx={fx_model:.1f}  fy={fy_model:.1f}  at model res {W_model}x{H_model}")
 
     # Rescale to original image resolution
@@ -278,7 +241,7 @@ def main():
     cy_orig = cy_model * scale_y
     print(f"      fx={fx_orig:.1f}  fy={fy_orig:.1f}  cx={cx_orig:.1f}  cy={cy_orig:.1f}  at original res {W_orig}x{H_orig}")
 
-    del probe_out, local_pts, conf_probe
+    del probe_out, rays
     torch.cuda.empty_cache()
 
     # ── 4. Run Pi3XVO for poses + global point cloud ──────────────────────────
