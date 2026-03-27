@@ -330,7 +330,7 @@ class FlashAttentionRope(AttentionRope):
             q = self.rope(q, xpos)
             k = self.rope(k, xpos)
 
-        with nn.attention.sdpa_kernel([SDPBackend.MATH]):
+        with nn.attention.sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
             x = scaled_dot_product_attention(q, k, v)
 
         x = x.transpose(1, 2).reshape([B, N, C])
